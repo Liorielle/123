@@ -1,0 +1,132 @@
+# 👇👇👇 ========== C.5：拦截检查站（四断点 1h 极速缓存版） ========== 👇👇👇
+    if supabase:
+        target_dict = parsed_data["body"] if "body" in parsed_data else parsed_data
+        
+        if "messages" in target_dict:
+            print("🔍 拦截检查站启动：部署第一阶段 8+24 四断点(1h)缓存策略...")
+            
+            # 1. 提取所有非 system 的真实对话消息，并收集系统规则
+            raw_chat_history = []
+            operit_system_rules = ""
+            for msg in target_dict.get("messages", []):
+                if msg.get("role") == "system":
+                    operit_system_rules += str(msg.get("content", "")) + "\n\n"
+                else:
+                    raw_chat_history.append(msg)
+            
+            if not raw_chat_history:
+                # 兜底：如果完全没有对话，伪造一条以防报错
+                raw_chat_history.append({"role": "user", "content": "你好"})
+
+            # 提取用户最新的话（用于触发关键词）
+            latest_user_msg = str(raw_chat_history[-1].get("content", ""))
+
+            # 2. 读取四大脑室
+            try:
+                config_res = supabase.table('prompts_config').select('*').limit(1).execute()
+                cfg = config_res.data[0] if config_res.data else {}
+            except Exception:
+                cfg = {}
+
+            cold_start_text = ""
+            if cold_start_context:
+                cold_start_text = f"\n\n[前情提要（最近对话记录）]\n{cold_start_context}"
+
+            injected_memories = []
+            try:
+                triggers_res = supabase.table('keyword_triggers').select('*').execute()
+                for trigger in triggers_res.data:
+                    kw = trigger.get('keyword', '')
+                    if kw and kw in latest_user_msg:
+                        injected_memories.append(trigger.get('memory_injection', ''))
+            except Exception:
+                pass
+            
+            memory_text = ""
+            if injected_memories:
+                memory_text = "\n\n[即时记忆唤醒]\n" + "\n".join(injected_memories)
+
+            # 3. 组装 BP1 (系统底座) 的内容
+            super_system_prompt = f"""[核心人格]
+{cfg.get('core_persona', '')}
+
+[互动规则]
+{cfg.get('interaction_rules', '')}
+
+[常驻记忆]
+{cfg.get('permanent_memory', '')}
+
+{memory_text}
+{cold_start_text}
+
+[输出规范]
+{cfg.get('output_format', '')}
+
+[系统底层交互与工具规则]
+{operit_system_rules}"""
+
+            # 4. 组装 BP2 (摘要占位) 的内容
+            # 【第二期工程预留】目前先填个空的占位符，等第二期再接入模型总结
+            summary_text = "目前尚无长期历史摘要。"
+
+            # 5. 开始给 raw_chat_history 贴断点标签 (高级借尸还魂大法)
+            
+            # --- 🎯 部署 BP1 和 BP2：藏在第一条消息里 ---
+            first_msg = raw_chat_history[0]
+            original_first_content = str(first_msg.get("content", ""))
+            
+            first_msg["content"] = [
+                {
+                    "type": "text",
+                    "text": f"[System Instructions]\n{super_system_prompt}\n",
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"}  # 👈 BP1: 死死冻住人设
+                },
+                {
+                    "type": "text",
+                    "text": f"[History Summary]\n{summary_text}\n\n[Chat Start]\n",
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"}  # 👈 BP2: 冻住历史摘要
+                },
+                {
+                    "type": "text",
+                    "text": original_first_content
+                }
+            ]
+            
+            # --- 🎯 部署 BP3：冻结的 8 轮 (第 16 条消息) ---
+            # 如果聊天记录超过 16 条，就在第 16 条上打个断点
+            if len(raw_chat_history) > 16:
+                frozen_edge_msg = raw_chat_history[15]
+                if isinstance(frozen_edge_msg["content"], str):
+                    frozen_edge_msg["content"] = [
+                        {
+                            "type": "text",
+                            "text": frozen_edge_msg["content"],
+                            "cache_control": {"type": "ephemeral", "ttl": "1h"}  # 👈 BP3: 冻结历史接力棒
+                        }
+                    ]
+                elif isinstance(frozen_edge_msg["content"], list):
+                    # 如果已经是列表(比如带有图片)，在最后一个块加标签
+                    frozen_edge_msg["content"][-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+            
+            # --- 🎯 部署 BP4：滑动鲜活层 (永远在最新的一条上) ---
+            latest_msg = raw_chat_history[-1]
+            if isinstance(latest_msg["content"], str):
+                latest_msg["content"] = [
+                    {
+                        "type": "text",
+                        "text": latest_msg["content"],
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"}  # 👈 BP4: 跟着每次对话滑动白嫖
+                    }
+                ]
+            elif isinstance(latest_msg["content"], list):
+                latest_msg["content"][-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+
+            # 6. 重新装箱，准备发货！
+            target_dict["messages"] = raw_chat_history
+            
+            # 彻底清理中转站可能遗留的顶层 system
+            if "system" in target_dict:
+                del target_dict["system"]
+                
+            print(f"✅ [第一期完工] 成功部署四断点 1h 缓存架构！当前总消息数：{len(raw_chat_history)}")
+    # 👆👆👆 =================================================== 👆👆👆
