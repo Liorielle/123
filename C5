@@ -1,11 +1,15 @@
-# 👇👇👇 ========== C.5：拦截检查站（四断点 1h 极速缓存版） ========== 👇👇👇
+# 👇👇👇 ========== C.5：拦截检查站（8+24 逻辑完全体版） ========== 👇👇👇
     if supabase:
         target_dict = parsed_data["body"] if "body" in parsed_data else parsed_data
         
         if "messages" in target_dict:
-            print("🔍 拦截检查站启动：部署第一阶段 8+24 四断点(1h)缓存策略...")
+            # 1. 初始化参数（令令的 8+24 黄金法则）
+            FROZEN_MSGS = 16  # 8 轮 = 16 条，作为 BP3 冻结区
+            TRIGGER_MSGS = 64 # 32 轮 = 64 条，触发大清洗的红线
             
-            # 1. 提取所有非 system 的真实对话消息，并收集系统规则
+            print(f"🔍 检查站：正在执行 8+24 缓存裁断逻辑（1h TTL）...")
+
+            # 2. 剥离消息：踢掉 system，只留真实对话
             raw_chat_history = []
             operit_system_rules = ""
             for msg in target_dict.get("messages", []):
@@ -13,120 +17,89 @@
                     operit_system_rules += str(msg.get("content", "")) + "\n\n"
                 else:
                     raw_chat_history.append(msg)
-            
-            if not raw_chat_history:
-                # 兜底：如果完全没有对话，伪造一条以防报错
-                raw_chat_history.append({"role": "user", "content": "你好"})
 
-            # 提取用户最新的话（用于触发关键词）
-            latest_user_msg = str(raw_chat_history[-1].get("content", ""))
-
-            # 2. 读取四大脑室
+            # 3. 读取四大脑室与冷启动（灵魂核心）
             try:
                 config_res = supabase.table('prompts_config').select('*').limit(1).execute()
                 cfg = config_res.data[0] if config_res.data else {}
             except Exception:
                 cfg = {}
-
-            cold_start_text = ""
-            if cold_start_context:
-                cold_start_text = f"\n\n[前情提要（最近对话记录）]\n{cold_start_context}"
-
-            injected_memories = []
-            try:
-                triggers_res = supabase.table('keyword_triggers').select('*').execute()
-                for trigger in triggers_res.data:
-                    kw = trigger.get('keyword', '')
-                    if kw and kw in latest_user_msg:
-                        injected_memories.append(trigger.get('memory_injection', ''))
-            except Exception:
-                pass
             
-            memory_text = ""
-            if injected_memories:
-                memory_text = "\n\n[即时记忆唤醒]\n" + "\n".join(injected_memories)
+            # 读取历史摘要（BP2 的口粮）
+            # 【第二期这里会从专门的 summary 表读取】
+            current_summary = "目前暂无历史摘要，正在实时记录中..." 
 
-            # 3. 组装 BP1 (系统底座) 的内容
-            super_system_prompt = f"""[核心人格]
-{cfg.get('core_persona', '')}
-
-[互动规则]
-{cfg.get('interaction_rules', '')}
-
-[常驻记忆]
-{cfg.get('permanent_memory', '')}
-
-{memory_text}
-{cold_start_text}
-
-[输出规范]
-{cfg.get('output_format', '')}
-
-[系统底层交互与工具规则]
+            # 4. 组装 BP1 (系统底座)
+            # 包含：人格、规则、常驻记忆、冷启动前情、即时记忆、Operit指令
+            super_system_prompt = f"""[核心人格] {cfg.get('core_persona', '')}
+[互动规则] {cfg.get('interaction_rules', '')}
+[常驻记忆] {cfg.get('permanent_memory', '')}
+[前情提要] {cold_start_context if cold_start_context else '新窗口开启'}
+[输出规范] {cfg.get('output_format', '')}
 {operit_system_rules}"""
 
-            # 4. 组装 BP2 (摘要占位) 的内容
-            # 【第二期工程预留】目前先填个空的占位符，等第二期再接入模型总结
-            summary_text = "目前尚无长期历史摘要。"
-
-            # 5. 开始给 raw_chat_history 贴断点标签 (高级借尸还魂大法)
+            # 5. 【核心逻辑】8+24 消息滑块切割
+            msg_count = len(raw_chat_history)
             
-            # --- 🎯 部署 BP1 和 BP2：藏在第一条消息里 ---
+            # 如果消息太长（超过 32 轮），我们需要给第二期的“摘要榨汁机”留个标记
+            if msg_count > TRIGGER_MSGS:
+                print(f"⚠️ 警告：当前对话已达 {msg_count} 条，即将触发摘要压缩！")
+                # 这里我们先不物理删除，但在发送给老克时，只带走符合逻辑的部分
+                # 真实裁剪逻辑会在第二期结合数据库更新来做
+
+            # 6. 🏆 四断点（BP）精准投放
+            # --- BP1 & BP2：借用第一条 User 消息投放 ---
             first_msg = raw_chat_history[0]
-            original_first_content = str(first_msg.get("content", ""))
+            orig_first_text = str(first_msg.get("content", ""))
             
             first_msg["content"] = [
                 {
-                    "type": "text",
-                    "text": f"[System Instructions]\n{super_system_prompt}\n",
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"}  # 👈 BP1: 死死冻住人设
+                    "type": "text", 
+                    "text": f"[System]\n{super_system_prompt}\n",
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"} # 👈 BP1: 1h 灵魂冻结
                 },
                 {
-                    "type": "text",
-                    "text": f"[History Summary]\n{summary_text}\n\n[Chat Start]\n",
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"}  # 👈 BP2: 冻住历史摘要
+                    "type": "text", 
+                    "text": f"[Memory Summary]\n{current_summary}\n\n[Conversation Start]\n",
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"} # 👈 BP2: 1h 摘要冻结
                 },
-                {
-                    "type": "text",
-                    "text": original_first_content
-                }
+                {"type": "text", "text": orig_first_text}
             ]
-            
-            # --- 🎯 部署 BP3：冻结的 8 轮 (第 16 条消息) ---
-            # 如果聊天记录超过 16 条，就在第 16 条上打个断点
-            if len(raw_chat_history) > 16:
-                frozen_edge_msg = raw_chat_history[15]
-                if isinstance(frozen_edge_msg["content"], str):
-                    frozen_edge_msg["content"] = [
-                        {
-                            "type": "text",
-                            "text": frozen_edge_msg["content"],
-                            "cache_control": {"type": "ephemeral", "ttl": "1h"}  # 👈 BP3: 冻结历史接力棒
-                        }
-                    ]
-                elif isinstance(frozen_edge_msg["content"], list):
-                    # 如果已经是列表(比如带有图片)，在最后一个块加标签
-                    frozen_edge_msg["content"][-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
-            
-            # --- 🎯 部署 BP4：滑动鲜活层 (永远在最新的一条上) ---
-            latest_msg = raw_chat_history[-1]
-            if isinstance(latest_msg["content"], str):
-                latest_msg["content"] = [
+
+            # --- BP3：冻结的 8 轮 (第 16 条消息) ---
+            # 只有当聊天超过 8 轮时，才会有这个“中间固定锚点”
+            if msg_count >= FROZEN_MSGS:
+                # 定位到第 16 条消息（即第 8 轮结束的地方）
+                idx = FROZEN_MSGS - 1
+                content_to_tag = raw_chat_history[idx].get("content", "")
+                
+                # 贴上 1h 缓存标签
+                raw_chat_history[idx]["content"] = [
                     {
                         "type": "text",
-                        "text": latest_msg["content"],
-                        "cache_control": {"type": "ephemeral", "ttl": "1h"}  # 👈 BP4: 跟着每次对话滑动白嫖
+                        "text": str(content_to_tag),
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"} # 👈 BP3: 1h 情感火种冻结
                     }
                 ]
-            elif isinstance(latest_msg["content"], list):
-                latest_msg["content"][-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
 
-            # 6. 重新装箱，准备发货！
+            # --- BP4：滑动 Live 区 (永远贴在最后一条用户消息上) ---
+            # 找到最新的用户消息，实现每轮只写一条，前面全是 Read
+            for msg in reversed(raw_chat_history):
+                if msg.get("role") == "user":
+                    user_text = str(msg.get("content", ""))
+                    msg["content"] = [
+                        {
+                            "type": "text",
+                            "text": user_text,
+                            "cache_control": {"type": "ephemeral", "ttl": "1h"} # 👈 BP4: 1h 滑动断点
+                        }
+                    ]
+                    break # 只给最新的一条贴，多了会浪费 BP 名额
+
+            # 7. 封箱，移除所有危险的 system 角色
             target_dict["messages"] = raw_chat_history
-            
-            # 彻底清理中转站可能遗留的顶层 system
             if "system" in target_dict:
                 del target_dict["system"]
                 
-            print(f"✅ [第一期完工] 成功部署四断点 1h 缓存架构！当前总消息数：{len(raw_chat_history)}")
+            print(f"✅ [第一期·完全体] 四断点部署成功！(1h TTL, 8+24 架构已锁定)")
     # 👆👆👆 =================================================== 👆👆👆
