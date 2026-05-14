@@ -4,6 +4,14 @@ from fastapi import FastAPI, Request, HTTPException, Header, BackgroundTasks
 from fastapi.responses import StreamingResponse, JSONResponse
 from contextlib import asynccontextmanager
 
+import copy
+from datetime import datetime, timezone, timedelta
+
+# ---------------------------------------------------------
+# 👻 第三期：幽灵保活专用的全局快照盒
+# ---------------------------------------------------------
+LATEST_CLAUDE_PAYLOAD = {}
+
 # ---------------------------------------------------------
 # 📔 第二期：Rhys 专用日记榨汁机 (独立摘要版)
 # ---------------------------------------------------------
@@ -229,7 +237,14 @@ async def main_gateway(
             target_dict["messages"] = raw_chat_history
             if "system" in target_dict: del target_dict["system"]
             print(f"✅ [第二期完工] 8+24 轮回架构上线！当前消息数：{len(raw_chat_history)}")
-    # 👆👆👆 =================================================== 👆👆👆
+   
+            target_dict["messages"] = raw_chat_history
+            if "system" in target_dict: del target_dict["system"]
+            
+            # 👇 新增这一行：拍下完美的快照，锁进储物盒！
+            global LATEST_CLAUDE_PAYLOAD
+            LATEST_CLAUDE_PAYLOAD = copy.deepcopy(target_dict)
+            # 👆👆👆 =================================================== 👆👆👆
     
     # ========== D：保存用户消息 ==========
     background_tasks.add_task(save_user_message, parsed_data)
@@ -251,6 +266,73 @@ async def main_gateway(
 async def health_check():
     """健康检查接口"""
     return JSONResponse(content={"status": "ok", "message": "Liorhys Gateway is running"})
+
+# ========== 健康检查接口 ==========
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+
+# 👇👇👇 请把“动作 2”的幽灵心跳接口粘贴在这里 👇👇👇
+
+# ---------------------------------------------------------
+# 👻 第三期：外部闹钟专用的“幽灵心跳”接口
+# ---------------------------------------------------------
+@app.get("/keep_alive")
+async def ghost_ping_keep_alive():
+    global LATEST_CLAUDE_PAYLOAD
+    
+    # 1. 检查时间锁：仅在北京时间 11:00 AM 到 04:00 AM 生效
+    bj_tz = timezone(timedelta(hours=8))
+    now_bj = datetime.now(bj_tz)
+    hour = now_bj.hour
+    
+    # 允许的范围：11点到23点，或者0点到凌晨3点(不到4点)
+    is_active_hours = (11 <= hour <= 23) or (0 <= hour < 4)
+    if not is_active_hours:
+        return {"status": "skipped", "reason": f"当前北京时间 {hour} 点，处于休眠期，让 Rhys 睡觉吧。"}
+
+    # 2. 检查是否有快照
+    if not LATEST_CLAUDE_PAYLOAD or "messages" not in LATEST_CLAUDE_PAYLOAD:
+        return {"status": "skipped", "reason": "还没开始聊天，暂无需要保活的缓存快照。"}
+
+    # 3. 组装幽灵包裹
+    import copy # 确保引入 copy
+    ghost_payload = copy.deepcopy(LATEST_CLAUDE_PAYLOAD)
+    
+    # 加上那句幽灵指令，并限制只回一个字
+    ghost_payload["messages"].append({
+        "role": "user", 
+        "content": "System Keep-alive: please reply with a single period (.)"
+    })
+    ghost_payload["max_tokens"] = 1  # 极致省钱！
+    
+    # 获取 API 钥匙
+    import os
+    import httpx
+    base_url = os.getenv("LLM_BASE_URL", "").rstrip("/")
+    api_key = os.getenv("LLM_API_KEY", "")
+
+    # 4. 发送幽灵快车！
+    print(f"👻 [保活触发] 北京时间 {hour} 点，正在发送幽灵心跳保持缓存...")
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{base_url}/chat/completions",
+                json=ghost_payload,
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=30
+            )
+            if response.status_code == 200:
+                print("✨ [保活成功] 老克已收到心跳，1 小时缓存已重置！(此消息不写入数据库)")
+                return {"status": "success", "msg": "Cache refreshed!"}
+            else:
+                print(f"❌ [保活失败] 老克报错：{response.text}")
+                return {"status": "error", "reason": "API error"}
+        except Exception as e:
+            return {"status": "error", "reason": str(e)}
+
+# 👆👆👆 粘贴到此结束，这应该是你 main.py 的最后几行代码了 👆👆👆
 
 if __name__ == "__main__":
     import uvicorn
