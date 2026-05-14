@@ -144,7 +144,7 @@ async def main_gateway(
 
     # 👆 探照灯结束
 
-  # 👇👇👇 ========== C.5：拦截检查站（第二期：8+24 轮回版） ========== 👇👇👇
+# 👇👇👇 ========== C.5：拦截检查站（第二期：8+24 轮回版） ========== 👇👇👇
     if supabase:
         target_dict = parsed_data["body"] if "body" in parsed_data else parsed_data
         
@@ -237,14 +237,14 @@ async def main_gateway(
             target_dict["messages"] = raw_chat_history
             if "system" in target_dict: del target_dict["system"]
             print(f"✅ [第二期完工] 8+24 轮回架构上线！当前消息数：{len(raw_chat_history)}")
-   
+
             target_dict["messages"] = raw_chat_history
             if "system" in target_dict: del target_dict["system"]
             
             # 👇 新增这一行：拍下完美的快照，锁进储物盒！
             global LATEST_CLAUDE_PAYLOAD
             LATEST_CLAUDE_PAYLOAD = copy.deepcopy(target_dict)
-            # 👆👆👆 =================================================== 👆👆👆
+    # 👆👆👆 =================================================== 👆👆👆
     
     # ========== D：保存用户消息 ==========
     background_tasks.add_task(save_user_message, parsed_data)
@@ -260,12 +260,6 @@ async def main_gateway(
     background_tasks.add_task(save_ai_reply, parsed_data, ai_reply_box)
 
     return StreamingResponse(wrapper(), media_type="text/event-stream")
-
-# ========== 健康检查接口 ==========
-@app.get("/health")
-async def health_check():
-    """健康检查接口"""
-    return JSONResponse(content={"status": "ok", "message": "Liorhys Gateway is running"})
 
 # ========== 健康检查接口 ==========
 @app.get("/health")
