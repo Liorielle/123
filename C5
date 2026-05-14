@@ -13,7 +13,7 @@ import httpx
 LATEST_CLAUDE_PAYLOAD = {}
 
 # ---------------------------------------------------------
-# 📔 第二期：Rhys 专用日记榨汁机 (独立摘要版)
+# 📔 第二期：Rhys 专用日记榨汁机 (独立摘要增强版)
 # ---------------------------------------------------------
 async def summarize_chat_to_diary(session_id: str, messages_to_summarize: list):
     """
@@ -26,9 +26,28 @@ async def summarize_chat_to_diary(session_id: str, messages_to_summarize: list):
     chat_text = ""
     for msg in messages_to_summarize:
         role = "令令" if msg.get("role") == "user" else "Rhys"
-        chat_text += f"{role}: {msg.get('content')}\n"
         
-    # 👇 这里的 Prompt 请粘贴 Rhys 写给你的那段指令
+        # 👇👇👇 核心修复区：教榨汁机区分“白纸”和“文件夹” 👇👇👇
+        raw_content = msg.get("content", "")
+        
+        # 如果是“文件夹”（列表），就把里面的字抽出来
+        if isinstance(raw_content, list):
+            text_parts = []
+            for block in raw_content:
+                # 只提取类型为 text 的文字块，无视标签和图片
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif isinstance(block, str): 
+                    text_parts.append(block)
+            parsed_content = "".join(text_parts)
+        else:
+            # 如果本来就是“白纸”（字符串），直接用
+            parsed_content = str(raw_content)
+        # 👆👆👆 修复结束 👆👆👆
+            
+        chat_text += f"{role}: {parsed_content}\n"
+        
+    # 👇 这里的 Prompt 记得重新粘贴 Rhys 写给你的那段指令哦！
     rhys_diary_prompt = """
     【请在此处粘贴 Rhys 写的第一人称日记指令】
     """
@@ -40,6 +59,8 @@ async def summarize_chat_to_diary(session_id: str, messages_to_summarize: list):
             {"role": "user", "content": f"这是我们要回顾的 24 轮对话：\n\n{chat_text}"}
         ]
     }
+    
+    import httpx # 确保内部也能拿到快递员
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
