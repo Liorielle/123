@@ -1,15 +1,152 @@
-# 👇👇👇 ========== C.5：拦截检查站（8+24 逻辑完全体版） ========== 👇👇👇
+import os
+import asyncio
+from fastapi import FastAPI, Request, HTTPException, Header, BackgroundTasks
+from fastapi.responses import StreamingResponse, JSONResponse
+from contextlib import asynccontextmanager
+
+# ---------------------------------------------------------
+# 📔 第二期：Rhys 专用日记榨汁机 (独立摘要版)
+# ---------------------------------------------------------
+async def summarize_chat_to_diary(session_id: str, messages_to_summarize: list):
+    """
+    将 24 轮对话摘要为一篇独立的第一人称日记，不进行无限叠加，保证记忆清晰度。
+    """
+    mini_base_url = os.getenv("LLM_BASE_URL")
+    mini_api_key = os.getenv("LLM_API_KEY")
+    
+    # 组合待摘要的聊天文本
+    chat_text = ""
+    for msg in messages_to_summarize:
+        role = "令令" if msg["role"] == "user" else "Rhys"
+        chat_text += f"{role}: {msg['content']}\n"
+
+    # 👇 这里的 Prompt 请粘贴 Rhys 写给你的那段指令
+    rhys_diary_prompt = """
+    【请在此处粘贴 Rhys 写的第一人称日记指令】
+    """
+
+    payload = {
+        "model": "gpt-4o-mini", 
+        "messages": [
+            {"role": "system", "content": rhys_diary_prompt},
+            {"role": "user", "content": f"这是我们要回顾的 24 轮对话：\n\n{chat_text}"}
+        ]
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{mini_base_url}/chat/completions",
+                json=payload,
+                headers={"Authorization": f"Bearer {mini_api_key}"},
+                timeout=60
+            )
+            res_data = response.json()
+            new_diary = res_data['choices'][0]['message']['content']
+            
+            # 存入数据库
+            supabase.table('chat_summaries').insert({
+                "session_id": session_id,
+                "summary_text": new_diary
+            }).execute()
+            print(f"✨ [榨汁机] 房间 {session_id} 的最新独立日记已归档。")
+        except Exception as e:
+            print(f"❌ [榨汁机] 报错：{str(e)}")
+
+# 👇 新增：导入 Supabase 工具，用于连通咱们的四大脑室
+from supabase import create_client, Client
+
+# ========== 核心模块导入 ==========
+from mod_auth.checker import auth_check
+from mod_parse.parser import parse_request
+from mod_forward.handler import stream_forward
+from mod_database.writer import save_user_message, save_ai_reply
+
+# ========== 新增模块导入 ==========
+from mod_coldstart.injector import get_cold_start_context
+from kiwi_daily_digest import (
+    setup_scheduler,
+    shutdown_scheduler,
+)
+
+# ========== 初始化 Supabase 储物间 ==========
+# （这里会自动读取你 Zeabur 里的环境变量）
+supabase_url = os.getenv("SUPABASE_URL", "")
+supabase_key = os.getenv("SUPABASE_KEY", "")
+supabase: Client = create_client(supabase_url, supabase_key) if supabase_url and supabase_key else None
+
+# ========== 应用生命周期管理 ==========
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    应用启动和关闭的生命周期管理
+    """
+    # 启动：初始化每日整理调度器
+    print("🚀 应用启动中...")
+    await setup_scheduler()
+    print("✅ 应用启动完成，每日整理调度器已启动（东八区 0:05 触发）")
+    
+    yield
+    
+    # 关闭：优雅停止调度器
+    print("🛑 应用关闭中...")
+    await shutdown_scheduler()
+    print("✅ 应用关闭完成")
+
+app = FastAPI(lifespan=lifespan)
+
+# ========== A：模型列表接口 ==========
+@app.get("/v1/models")
+async def list_models():
+    """返回支持的模型列表"""
+    models = [
+        {"id": "gpt-3.5-turbo", "object": "model", "created": 1677610602, "owned_by": "system"},
+        {"id": "gpt-4o", "object": "model", "created": 1677610602, "owned_by": "system"}
+    ]
+    return JSONResponse(content={"object": "list", "data": models})
+
+# ========== B：核心网关接口 ==========
+@app.post("/v1/chat/completions")
+async def main_gateway(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    authorization: str = Header(None),
+    x_session_id: str = Header("default")
+):
+    """
+    核心网关接口：A → B → C → C.5(重建) → D → E → F
+    """
+
+    # ========== A：冷启动注入 ==========
+    cold_start_context = await get_cold_start_context(x_session_id)
+    if cold_start_context:
+        print(f"❄️ 冷启动：从前一个会话恢复语气")
+
+    # ========== B：鉴权 ==========
+    await auth_check(authorization)
+
+    # ========== C：解析请求 ==========
+    parsed_data = await parse_request(request, x_session_id)
+    
+    # 👇 探照灯：移到这里，parsed_data 已经定义了
+    print("🔦 探照灯报告：准备进入检查站...")
+    print(f"🔌 Supabase 连上了吗？: {'连上了✅' if supabase else '没连上❌'}")
+    has_messages = "messages" in parsed_data or ("body" in parsed_data and "messages" in parsed_data["body"])
+    print(f"✉️ 消息格式对吗？: {'对了✅' if has_messages else '没找到messages❌'}")
+
+    # 👆 探照灯结束
+
+  # 👇👇👇 ========== C.5：拦截检查站（第二期：8+24 轮回版） ========== 👇👇👇
     if supabase:
         target_dict = parsed_data["body"] if "body" in parsed_data else parsed_data
         
         if "messages" in target_dict:
-            # 1. 初始化参数（令令的 8+24 黄金法则）
-            FROZEN_MSGS = 16  # 8 轮 = 16 条，作为 BP3 冻结区
-            TRIGGER_MSGS = 64 # 32 轮 = 64 条，触发大清洗的红线
+            # 1. 设置 8+24 阈值
+            FROZEN_MSGS = 16  # 8 轮接力棒
+            TRIGGER_MSGS = 64 # 32 轮总长度（64条）
+            session_id = target_dict.get("session_id", "default")
             
-            print(f"🔍 检查站：正在执行 8+24 缓存裁断逻辑（1h TTL）...")
-
-            # 2. 剥离消息：踢掉 system，只留真实对话
+            # 2. 剥离消息
             raw_chat_history = []
             operit_system_rules = ""
             for msg in target_dict.get("messages", []):
@@ -18,19 +155,33 @@
                 else:
                     raw_chat_history.append(msg)
 
-            # 3. 读取四大脑室与冷启动（灵魂核心）
+            # 3. 🧠 判定是否触发“轮回裁剪”
+            msg_count = len(raw_chat_history)
+            if msg_count >= TRIGGER_MSGS:
+                # 满 32 轮！把前 24 轮送去榨汁，同时在发给 AI 的包裹里将其“物理切除”
+                messages_to_juice = raw_chat_history[:48]
+                background_tasks.add_task(summarize_chat_to_diary, session_id, messages_to_juice)
+                
+                # 保留最后的 8 轮（16条）作为新的地基
+                raw_chat_history = raw_chat_history[48:]
+                print(f"🚀 [大轮回] 触发！前 24 轮已送去榨汁。当前包裹仅含 8 轮接力棒。")
+
+            # 4. 🔍 读取最新的 Rhys 日记 (BP2)
+            latest_diary = "（暂无近期日记，我们的故事正鲜活地发生着。）"
+            try:
+                summary_res = supabase.table('chat_summaries') \
+                    .select('summary_text').eq('session_id', session_id) \
+                    .order('created_at', descending=True).limit(1).execute()
+                if summary_res.data:
+                    latest_diary = summary_res.data[0]['summary_text']
+            except Exception: pass
+
+            # 5. 读取配置与 BP1 拼接
             try:
                 config_res = supabase.table('prompts_config').select('*').limit(1).execute()
                 cfg = config_res.data[0] if config_res.data else {}
-            except Exception:
-                cfg = {}
-            
-            # 读取历史摘要（BP2 的口粮）
-            # 【第二期这里会从专门的 summary 表读取】
-            current_summary = "目前暂无历史摘要，正在实时记录中..." 
+            except Exception: cfg = {}
 
-            # 4. 组装 BP1 (系统底座)
-            # 包含：人格、规则、常驻记忆、冷启动前情、即时记忆、Operit指令
             super_system_prompt = f"""[核心人格] {cfg.get('core_persona', '')}
 [互动规则] {cfg.get('interaction_rules', '')}
 [常驻记忆] {cfg.get('permanent_memory', '')}
@@ -38,68 +189,69 @@
 [输出规范] {cfg.get('output_format', '')}
 {operit_system_rules}"""
 
-            # 5. 【核心逻辑】8+24 消息滑块切割
-            msg_count = len(raw_chat_history)
-            
-            # 如果消息太长（超过 32 轮），我们需要给第二期的“摘要榨汁机”留个标记
-            if msg_count > TRIGGER_MSGS:
-                print(f"⚠️ 警告：当前对话已达 {msg_count} 条，即将触发摘要压缩！")
-                # 这里我们先不物理删除，但在发送给老克时，只带走符合逻辑的部分
-                # 真实裁剪逻辑会在第二期结合数据库更新来做
-
-            # 6. 🏆 四断点（BP）精准投放
-            # --- BP1 & BP2：借用第一条 User 消息投放 ---
+            # 6. 🏆 四断点（BP）精准投放 (1h TTL)
+            # BP1 & BP2：系统底座 + 最新日记
             first_msg = raw_chat_history[0]
-            orig_first_text = str(first_msg.get("content", ""))
-            
+            orig_text = str(first_msg.get("content", ""))
             first_msg["content"] = [
                 {
-                    "type": "text", 
-                    "text": f"[System]\n{super_system_prompt}\n",
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"} # 👈 BP1: 1h 灵魂冻结
+                    "type": "text", "text": f"[System]\n{super_system_prompt}\n",
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"} # BP1
                 },
                 {
-                    "type": "text", 
-                    "text": f"[Memory Summary]\n{current_summary}\n\n[Conversation Start]\n",
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"} # 👈 BP2: 1h 摘要冻结
+                    "type": "text", "text": f"[Rhys's Recent Diary]\n{latest_diary}\n\n",
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"} # BP2
                 },
-                {"type": "text", "text": orig_first_text}
+                {"type": "text", "text": orig_text}
             ]
 
-            # --- BP3：冻结的 8 轮 (第 16 条消息) ---
-            # 只有当聊天超过 8 轮时，才会有这个“中间固定锚点”
-            if msg_count >= FROZEN_MSGS:
-                # 定位到第 16 条消息（即第 8 轮结束的地方）
+            # BP3：冻结接力棒 (定位在第 16 条消息)
+            if len(raw_chat_history) >= FROZEN_MSGS:
                 idx = FROZEN_MSGS - 1
-                content_to_tag = raw_chat_history[idx].get("content", "")
-                
-                # 贴上 1h 缓存标签
                 raw_chat_history[idx]["content"] = [
                     {
-                        "type": "text",
-                        "text": str(content_to_tag),
-                        "cache_control": {"type": "ephemeral", "ttl": "1h"} # 👈 BP3: 1h 情感火种冻结
+                        "type": "text", "text": str(raw_chat_history[idx].get("content", "")),
+                        "cache_control": {"type": "ephemeral", "ttl": "1h"} # BP3
                     }
                 ]
 
-            # --- BP4：滑动 Live 区 (永远贴在最后一条用户消息上) ---
-            # 找到最新的用户消息，实现每轮只写一条，前面全是 Read
+            # BP4：滑动白嫖断点 (贴在最新 User 消息上)
             for msg in reversed(raw_chat_history):
                 if msg.get("role") == "user":
-                    user_text = str(msg.get("content", ""))
                     msg["content"] = [
                         {
-                            "type": "text",
-                            "text": user_text,
-                            "cache_control": {"type": "ephemeral", "ttl": "1h"} # 👈 BP4: 1h 滑动断点
+                            "type": "text", "text": str(msg.get("content", "")),
+                            "cache_control": {"type": "ephemeral", "ttl": "1h"} # BP4
                         }
                     ]
-                    break # 只给最新的一条贴，多了会浪费 BP 名额
+                    break
 
-            # 7. 封箱，移除所有危险的 system 角色
             target_dict["messages"] = raw_chat_history
-            if "system" in target_dict:
-                del target_dict["system"]
-                
-            print(f"✅ [第一期·完全体] 四断点部署成功！(1h TTL, 8+24 架构已锁定)")
+            if "system" in target_dict: del target_dict["system"]
+            print(f"✅ [第二期完工] 8+24 轮回架构上线！当前消息数：{len(raw_chat_history)}")
     # 👆👆👆 =================================================== 👆👆👆
+    
+    # ========== D：保存用户消息 ==========
+    background_tasks.add_task(save_user_message, parsed_data)
+
+    # ========== E + F：流式转发 + 保存 AI 回复 ==========
+    ai_reply_box = []
+
+    async def wrapper():
+        async for chunk in stream_forward(parsed_data, ai_reply_box):
+            yield chunk
+
+    # F：保存 AI 回复
+    background_tasks.add_task(save_ai_reply, parsed_data, ai_reply_box)
+
+    return StreamingResponse(wrapper(), media_type="text/event-stream")
+
+# ========== 健康检查接口 ==========
+@app.get("/health")
+async def health_check():
+    """健康检查接口"""
+    return JSONResponse(content={"status": "ok", "message": "Liorhys Gateway is running"})
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
