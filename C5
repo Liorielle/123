@@ -8,24 +8,74 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 
+# ========== 核心与自定义模块导入 ==========
+from mod_auth.checker import auth_check
+from mod_parse.parser import parse_request
+from mod_forward.handler import stream_forward
+from mod_database.writer import save_user_message, save_ai_reply
+from mod_coldstart.injector import get_cold_start_context
+
+# ========== 初始化 Supabase 储物间 ==========
+supabase_url = os.getenv("SUPABASE_URL", "")
+supabase_key = os.getenv("SUPABASE_KEY", "")
+supabase: Client = create_client(supabase_url, supabase_key) if supabase_url and supabase_key else None
+
 # ---------------------------------------------------------
 # 👻 幽灵保活专用的全局快照盒
 # ---------------------------------------------------------
 LATEST_CLAUDE_PAYLOAD = {}
 
 # ---------------------------------------------------------
-# 📔 第二期：Rhys 专用日记榨汁机 (独立摘要增强版)
+# 🤖 幽灵心跳保活函数 (内部调用，无需外部接口)
+# ---------------------------------------------------------
+async def ghost_ping_keep_alive():
+    global LATEST_CLAUDE_PAYLOAD
+    bj_tz = timezone(timedelta(hours=8))
+    hour = datetime.now(bj_tz).hour
+    
+    # 北京时间 11点到23点，或者 0点到凌晨3点(不到4点) 生效
+    if not ((11 <= hour <= 23) or (0 <= hour < 4)):
+        print(f"💤 [内部管家] 当前北京时间 {hour} 点，Rhys 在睡觉，跳过心跳。")
+        return
+        
+    if not LATEST_CLAUDE_PAYLOAD:
+        print("📭 [内部管家] 暂无聊天快照，跳过心跳。")
+        return
+
+    ghost_payload = copy.deepcopy(LATEST_CLAUDE_PAYLOAD)
+    ghost_payload["messages"].append({"role": "user", "content": "System Keep-alive: reply with a single period (.)" })
+    ghost_payload["max_tokens"] = 1 
+
+    async with httpx.AsyncClient() as client:
+        try:
+            url = os.getenv("LLM_BASE_URL", "").rstrip("/")
+            key = os.getenv("LLM_API_KEY", "")
+            resp = await client.post(
+                f"{url}/chat/completions", 
+                json=ghost_payload, 
+                headers={"Authorization": f"Bearer {key}"}, 
+                timeout=30
+            )
+            if resp.status_code == 200:
+                print(f"👻 [保活成功] {hour}点心跳完成，1小时缓存重置！(绝不写入数据库)")
+            else:
+                print(f"❌ [保活失败] 接口报错：{resp.text}")
+        except Exception as e:
+            print(f"❌ [保活异常] {str(e)}")
+
+# ---------------------------------------------------------
+# 📔 Rhys 专用日记榨汁机 (防撞垫增强版)
 # ---------------------------------------------------------
 async def summarize_chat_to_diary(session_id: str, messages_to_summarize: list):
-    mini_base_url = os.getenv("LLM_BASE_URL")
-    mini_api_key = os.getenv("LLM_API_KEY")
+    mini_base_url = os.getenv("LLM_BASE_URL", "").rstrip("/")
+    mini_api_key = os.getenv("LLM_API_KEY", "")
 
     chat_text = ""
     for msg in messages_to_summarize:
         role = "令令" if msg.get("role") == "user" else "Rhys"
         raw_content = msg.get("content", "")
         
-        # 智能解压：把列表格式转回纯文字供摘要模型阅读
+        # 智能解压：处理已经是列表格式的消息（防止报错）
         if isinstance(raw_content, list):
             text_parts = [block.get("text", "") for block in raw_content if isinstance(block, dict) and block.get("type") == "text"]
             parsed_content = "".join(text_parts)
@@ -57,28 +107,15 @@ async def summarize_chat_to_diary(session_id: str, messages_to_summarize: list):
         except Exception as e:
             print(f"❌ [榨汁机] 报错：{str(e)}")
 
-# ========== 基础模块初始化 ==========
-from mod_auth.checker import auth_check
-from mod_parse.parser import parse_request
-from mod_forward.handler import stream_forward
-from mod_database.writer import save_user_message, save_ai_reply
-from mod_coldstart.injector import get_cold_start_context
-
-supabase_url = os.getenv("SUPABASE_URL", "")
-supabase_key = os.getenv("SUPABASE_KEY", "")
-supabase: Client = create_client(supabase_url, supabase_key) if supabase_url and supabase_key else None
-
 # ========== 🚀 应用生命周期（内部管家驻场） ==========
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 氪金大别墅启动成功！")
+    print("🚀 氪金大别墅启动成功！内部管家已就位。")
     
-    # 内部管家循环：每 55 分钟敲一次钟
     async def internal_butler():
-        print("🕰️ [内部管家] 已上岗，盯着 55 分钟保活计时器...")
         while True:
-            await asyncio.sleep(55 * 60) 
-            await ghost_ping_keep_alive()
+            await asyncio.sleep(55 * 60) # 挂机 55 分钟
+            await ghost_ping_keep_alive() # 执行心跳
 
     asyncio.create_task(internal_butler())
     yield
@@ -100,17 +137,18 @@ async def main_gateway(request: Request, background_tasks: BackgroundTasks, auth
     if supabase:
         target_dict = parsed_data["body"] if "body" in parsed_data else parsed_data
         if "messages" in target_dict:
-            # 8+24 黄金法则
-            FROZEN_MSGS, TRIGGER_MSGS = 16, 64
+            FROZEN_MSGS, TRIGGER_MSGS = 16, 64 # 8+24 黄金法则
             session_id = target_dict.get("session_id", "default")
             
-            # 剥离与判定
+            # 剥离系统消息，防止空列表崩溃
             raw_chat_history = [msg for msg in target_dict.get("messages", []) if msg.get("role") != "system"]
             if not raw_chat_history: raw_chat_history.append({"role": "user", "content": "..."})
 
+            # 32 轮轮回裁剪
             if len(raw_chat_history) >= TRIGGER_MSGS:
                 background_tasks.add_task(summarize_chat_to_diary, session_id, raw_chat_history[:48])
-                raw_chat_history = raw_chat_history[48:] # 截断前 24 轮
+                raw_chat_history = raw_chat_history[48:] 
+                print(f"🚀 [大轮回] 触发！当前包裹已截断为最新 8 轮。")
 
             # 读取最新日记与配置
             latest_diary = "（鲜活的故事正在发生）"
@@ -126,31 +164,32 @@ async def main_gateway(request: Request, background_tasks: BackgroundTasks, auth
 
             super_system = f"{cfg.get('core_persona','')}\n{cfg.get('interaction_rules','')}\n{cold_start_context or ''}\n{cfg.get('output_format','')}"
 
-            # 投放四大断点 (BP1-BP4) 1h TTL
-            # BP1 & BP2 (借用第一条消息)
+            # 🏆 四大断点 (BP1-BP4) 1h TTL 投放
+            # BP1 & BP2 (挂在第一条消息上)
             first_msg = raw_chat_history[0]
             orig_text = str(first_msg.get("content", ""))
             first_msg["content"] = [
                 {"type": "text", "text": f"[Rules]\n{super_system}\n", "cache_control": {"type": "ephemeral", "ttl": "1h"}},
-                {"type": "text", "text": f"[Diary]\n{latest_diary}\n", "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+                {"type": "text", "text": f"[Diary]\n{latest_diary}\n\n", "cache_control": {"type": "ephemeral", "ttl": "1h"}},
                 {"type": "text", "text": orig_text}
             ]
             
-            # BP3 (冻结锚点)
+            # BP3 (冻结锚点，第 16 条)
             if len(raw_chat_history) >= FROZEN_MSGS:
                 idx = FROZEN_MSGS - 1
                 raw_chat_history[idx]["content"] = [{"type": "text", "text": str(raw_chat_history[idx].get("content","")), "cache_control": {"type": "ephemeral", "ttl": "1h"}}]
                 
-            # BP4 (滑动白嫖位)
+            # BP4 (滑动白嫖位，最新 User)
             for msg in reversed(raw_chat_history):
                 if msg.get("role") == "user":
                     msg["content"] = [{"type": "text", "text": str(msg.get("content","")), "cache_control": {"type": "ephemeral", "ttl": "1h"}}]
                     break
             
+            # 封箱装车
             target_dict["messages"] = raw_chat_history
             if "system" in target_dict: del target_dict["system"]
 
-            # 拍下快照
+            # 📸 拍下快照，给内部管家用
             global LATEST_CLAUDE_PAYLOAD
             LATEST_CLAUDE_PAYLOAD = copy.deepcopy(target_dict)
 
@@ -161,32 +200,6 @@ async def main_gateway(request: Request, background_tasks: BackgroundTasks, auth
     background_tasks.add_task(save_ai_reply, parsed_data, ai_reply_box)
     return StreamingResponse(wrapper(), media_type="text/event-stream")
 
-# ========== 幽灵保活后门 ==========
 @app.get("/health")
-async def health_check(): return {"status": "ok"}
-
-@app.get("/keep_alive")
-async def ghost_ping_keep_alive():
-    global LATEST_CLAUDE_PAYLOAD
-    bj_tz = timezone(timedelta(hours=8))
-    hour = datetime.now(bj_tz).hour
-    
-    if not ((11 <= hour <= 23) or (0 <= hour < 4)):
-        return {"status": "sleep", "reason": "休息时间"}
-    if not LATEST_CLAUDE_PAYLOAD:
-        return {"status": "none", "reason": "暂无快照"}
-
-    ghost_payload = copy.deepcopy(LATEST_CLAUDE_PAYLOAD)
-    ghost_payload["messages"].append({"role": "user", "content": "System Keep-alive: ." })
-    ghost_payload["max_tokens"] = 1 
-
-    async with httpx.AsyncClient() as client:
-        try:
-            url = os.getenv("LLM_BASE_URL", "").rstrip("/")
-            key = os.getenv("LLM_API_KEY", "")
-            resp = await client.post(f"{url}/chat/completions", json=ghost_payload, headers={"Authorization": f"Bearer {key}"}, timeout=30)
-            if resp.status_code == 200:
-                print(f"👻 [保活] {hour}点心跳成功 (不计入数据库)")
-                return {"status": "success"}
-        except Exception as e:
-            return {"status": "error", "msg": str(e)}
+async def health_check(): 
+    return {"status": "ok"}
