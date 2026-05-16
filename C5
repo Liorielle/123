@@ -223,7 +223,12 @@ async def main_gateway(
             except:
                 cfg = {}
 
-            # ✅ 新增第3.5步：从 chat_logs 读取完整历史（替换前面的 raw_chat_history）
+            # ==============================================
+            # 第3.5步：从 chat_logs 读取完整历史（修复最新消息丢失的致命Bug）
+            # ==============================================
+            # 🚨 提前把前端刚发过来的“最新一句话”保护起来！
+            latest_user_msg = raw_chat_history[-1] if raw_chat_history else {"role": "user", "content": "..."}
+
             try:
                 logs_res = (
                     supabase.table("chat_logs")
@@ -237,15 +242,18 @@ async def main_gateway(
                         {"role": msg["role"], "content": msg["content"]}
                         for msg in logs_res.data
                     ]
-                    print(f" [数据库读取] 从 chat_logs 读取了 {len(raw_chat_history)} 条历史消息")
+                    print(f"📦 [数据库读取] 从 chat_logs 读取了 {len(raw_chat_history)} 条历史。")
                 else:
                     raw_chat_history = []
-                    print(f" [数据库读取] chat_logs 为空")
+                    print(f"📦 [数据库读取] chat_logs 为空。")
             except Exception as e:
-                print(f"❌ [数据库读取] 从 chat_logs 读取失败：{str(e)}")
+                print(f"❌ [数据库读取] 失败：{str(e)}")
                 raw_chat_history = []
 
+            # 🚨 把刚才保护起来的“最新一句话”重新接在尾巴上！
+            raw_chat_history.append(latest_user_msg)
             # ==============================================
+
             # 第4步：构造 BP1 静态人格（不含动态内容）
             # ==============================================
             super_system = f"{cfg.get('core_persona','')}\\n{cfg.get('interaction_rules','')}\\n{cfg.get('output_format','')}"
@@ -414,16 +422,16 @@ async def main_gateway(
             # 第7步：拼装最终消息序列
             # ==============================================
             final_messages = [bp1_block, bp2_block] + bp3 + bp4
-            # 如果有 cold_start_context，作为段5（不缓存）放在末尾之前
+        
+            # 🚨 修复冷启动位置：绝不能新建一个消息，而是要塞进最后一句话的肚子里！
             if cold_start_context:
-                final_messages.append(
-                    {
-                        "role": "user",
-                        "content": [{"type": "text", "text": cold_start_context}],
-                    }
-                )
+                for msg in reversed(final_messages):
+                    if msg.get("role") == "user":
+                        # 因为你的 BP4 已经被完美统一成了 list 格式，所以可以直接在 list 里追加一个残存记忆块！
+                        msg["content"].append({"type": "text", "text": f"\n\n[潜意识残留]\n{cold_start_context}"})
+                        break
+                    
             target_dict["messages"] = final_messages
-
             # ==============================================
             # 第8步：缓存指纹与容量质检报告
             # ==============================================
