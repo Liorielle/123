@@ -1,4 +1,4 @@
-import os
+ import os
 import asyncio
 import httpx
 import copy
@@ -251,55 +251,72 @@ async def main_gateway(
                     bp4 = []
 
             # ==============================================
-            # 第6步：投放四大断点 (BP1-BP4) 1h TTL
-            # ==============================================
-            # --- BP1（静态人格，独立缓存断点）---
-            bp1_block = {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"[Rules]\n{super_system}\n",
-                        "cache_control": {"type": "ephemeral", "ttl": "1h"},
-                    }
-                ],
-            }
-
-            # --- BP2（即时摘要，独立缓存断点）---
-            bp2_block = {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"[Diary]\n{latest_diary}\n\n",
-                        "cache_control": {"type": "ephemeral", "ttl": "1h"},
-                    }
-                ],
-            }
-
-            # --- BP3（冻结锚点，最后一条打固定断点）---
-            if bp3:
-                last_bp3 = bp3[-1]
-                last_bp3["content"] = [
-                    {
-                        "type": "text",
-                        "text": str(last_bp3.get("content", "")),
-                        "cache_control": {"type": "ephemeral", "ttl": "1h"},
-                    }
-                ]
-
-            # --- BP4（滑动白嫖位，最后一条 User 打动态断点）---
-            if bp4:
-                for msg in reversed(bp4):
-                    if msg.get("role") == "user":
-                        msg["content"] = [
-                            {
-                                "type": "text",
-                                "text": str(msg.get("content", "")),
-                                "cache_control": {"type": "ephemeral", "ttl": "1h"},
-                            }
-                        ]
-                        break
+# 第6步：投放四大断点 (BP1-BP4) 1h TTL
+# ==============================================
+# --- BP1（静态人格，独立缓存断点）---
+bp1_block = {
+    "role": "user",
+    "content": [
+        {
+            "type": "text",
+            "text": f"[Rules]\n{super_system}\n",
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
+    ],
+}
+# --- BP2（即时摘要，独立缓存断点）---
+bp2_block = {
+    "role": "user",
+    "content": [
+        {
+            "type": "text",
+            "text": f"[Diary]\n{latest_diary}\n\n",
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
+    ],
+}
+# --- BP3（冻结锚点，最后一条打固定断点）---
+if bp3:
+    # BP3 前面的消息保持 string 格式
+    for msg in bp3[:-1]:
+        if isinstance(msg.get("content"), list):
+            text_parts = [
+                block.get("text", "")
+                for block in msg["content"]
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            msg["content"] = "".join(text_parts)
+    
+    # 最后一条加断点
+    last_bp3 = bp3[-1]
+    last_bp3["content"] = [
+        {
+            "type": "text",
+            "text": str(last_bp3.get("content", "")),
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
+    ]
+# --- BP4（滑动白嫖位，最后一条打动态断点）---
+if bp4:
+    # BP4 前面的消息保持 string 格式
+    for msg in bp4[:-1]:
+        if isinstance(msg.get("content"), list):
+            text_parts = [
+                block.get("text", "")
+                for block in msg["content"]
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            msg["content"] = "".join(text_parts)
+    
+    # 最后一条消息加断点（不管是 user 还是 assistant）
+    last_bp4 = bp4[-1]
+    last_bp4["content"] = [
+        {
+            "type": "text",
+            "text": str(last_bp4.get("content", "")),
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
+    ]
 
             # ==============================================
             # 第7步：拼装最终消息序列
@@ -316,30 +333,26 @@ async def main_gateway(
             target_dict["messages"] = final_messages
 
             # ==============================================
-            # 第8步：缓存指纹与容量质检报告
-            # ==============================================
-            bp4_text = ""
-            if bp4:
-                for msg in reversed(bp4):
-                    if msg.get("role") == "user":
-                        bp4_text = str(msg.get("content", ""))
-                        break
-
-            N = len(raw_chat_history)
-            print("================ 缓存指纹与容量质检报告 ================")
-            print(f" [BP1 人设前情] 指纹:[{get_fp(super_system)}]")
-            print(f" [BP2 即时摘要] 指纹:[{get_fp(latest_diary)}]")
-            if bp3:
-                bp3_text = str(bp3[-1].get("content", ""))
-                print(f" [BP3 冻结锚点] 状态: ✅ 已满 ({len(bp3)}/{FROZEN_MSGS}条) | 指纹:[{get_fp(bp3_text)}]")
-            else:
-                print(f" [BP3 冻结锚点] 状态: ⏳ 未满 (0/{FROZEN_MSGS}条)")
-            if bp4:
-                print(f" [BP4 最新滑动] 状态: 滑动中 (当前积攒了 {len(bp4)} 条新对话) | 指纹:[{get_fp(bp4_text)}]")
-            else:
-                print(f" [BP4 最新滑动] 状态: ⏳ 未分离 (当前包裹太短或刚触发轮回) | 指纹:[{get_fp(bp4_text)}]")
-            print(f" [总包裹雷达] 当前包裹共 {N} 条。距离下次大轮回还差 {TRIGGER_MSGS - N} 条。")
-            print("==========================================================")
+# 第8步：缓存指纹与容量质检报告
+# ==============================================
+bp4_text = ""
+if bp4:
+    bp4_text = str(bp4[-1].get("content", ""))
+N = len(raw_chat_history)
+print("================ 缓存指纹与容量质检报告 ================\")
+print(f" [BP1 人设前情] 指纹:[{get_fp(super_system)}]")
+print(f" [BP2 即时摘要] 指纹:[{get_fp(latest_diary)}]")
+if bp3:
+    bp3_text = str(bp3[-1].get("content", ""))
+    print(f" [BP3 冻结锚点] 状态: ✅ 已满 ({len(bp3)}/{FROZEN_MSGS}条) | 指纹:[{get_fp(bp3_text)}]")
+else:
+    print(f" [BP3 冻结锚点] 状态: ⏳ 未满 (0/{FROZEN_MSGS}条)")
+if bp4:
+    print(f" [BP4 最新滑动] 状态: 滑动中 (当前积攒了 {len(bp4)} 条新对话) | 指纹:[{get_fp(bp4_text)}]")
+else:
+    print(f" [BP4 最新滑动] 状态: ⏳ 未分离 (当前包裹太短或刚触发轮回) | 指纹:[{get_fp(bp4_text)}]")
+print(f" [总包裹雷达] 当前包裹共 {N} 条。距离下次大轮回还差 {TRIGGER_MSGS - N} 条。")
+print("==========================================================")
 
     # ==============================================
     # 后续不变：保存快照、写入数据库、流式返回
